@@ -1,0 +1,4 @@
+{"event": "start", "when": "2026-09-22 22:05:51", "mac": "C3:00:00:61:FD:40"}
+{"event": "stop", "when": "2026-09-22 22:08:51", "mac": "C3:00:00:61:FD:40", "duration_seconds": 180}
+{"event": "start", "when": "2026-09-22 22:52:52", "mac": "C3:00:00:61:FD:40"}
+{"event": "stop", "when": "2026-09-22 22:55:41", "mac": "C3:00:00:61:FD:40", "duration_seconds": 168}

@@ -41,7 +41,7 @@ from motion_analytics import DEFAULT_SESSION_GAP_SECONDS, analyze
 _cfg = load_config()
 BROKER, PORT, TOPIC = _cfg.broker, _cfg.port, _cfg.topic
 
-WEB_HOST = os.environ.get("ER_WEB_HOST", "127.0.0.1")
+WEB_HOST = os.environ.get("ER_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("ER_WEB_PORT", "8081"))
 TARGET_MAC = os.environ.get("ER_TARGET_MAC", "C3:00:00:61:FD:40")
 TARGET_MAC_KEY = TARGET_MAC.replace(":", "").upper()
