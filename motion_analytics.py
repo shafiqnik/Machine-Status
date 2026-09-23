@@ -17,6 +17,31 @@ from minew_mse import parse_mse
 DEFAULT_MOTION_LOG = "Motion.json"
 DEFAULT_TARGET_MAC = "C3:00:00:61:FD:40"
 
+# All timestamps this project writes are UTC, formatted as ISO-8601 with a
+# trailing "Z" (e.g. "2026-09-23T00:08:53Z"). That makes them unambiguous
+# on disk and lets the dashboard convert them to each viewer's own local
+# time in the browser, rather than showing whatever timezone the server
+# happens to be set to. parse_timestamp() also accepts the older naive
+# "YYYY-MM-DD HH:MM:SS" format (what this project wrote before it switched
+# to explicit UTC) so existing Motion.json / log data keeps working.
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+_LEGACY_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def format_timestamp(dt):
+    return dt.strftime(TIMESTAMP_FORMAT)
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    for fmt in (TIMESTAMP_FORMAT, _LEGACY_TIMESTAMP_FORMAT):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
 # How long we'll wait after the last "motion" reading before deciding the
 # machine actually stopped, rather than just missing one broadcast.
 # MSE01 broadcasts every 15s, MSE02 every 30s by default; the gateway can
@@ -59,6 +84,30 @@ def load_motion_records(path=DEFAULT_MOTION_LOG):
     return data if isinstance(data, list) else []
 
 
+def raw_records_in_range(records, start_iso, end_iso, limit=500):
+    """Return the raw {when, topic, raw} hits (as originally logged to
+    Motion.json) whose timestamp falls within [start_iso, end_iso], both
+    inclusive. Used by the dashboard's session drill-down: clicking a run
+    session shows exactly the raw MQTT messages that made it up."""
+    start = parse_timestamp(start_iso)
+    end = parse_timestamp(end_iso)
+    if start is None or end is None:
+        return []
+    out = []
+    for rec in records:
+        when = rec.get("when") if isinstance(rec, dict) else None
+        raw = rec.get("raw") if isinstance(rec, dict) else None
+        if not when or not raw:
+            continue
+        ts = parse_timestamp(when)
+        if ts is None or not (start <= ts <= end):
+            continue
+        out.append({"when": when, "topic": rec.get("topic"), "raw": raw})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def extract_events(records, target_mac=DEFAULT_TARGET_MAC):
     """Decode each raw hit into a timestamped Minew MSE reading for the
     target beacon. Records that don't parse (wrong device, corrupt JSON,
@@ -70,9 +119,8 @@ def extract_events(records, target_mac=DEFAULT_TARGET_MAC):
         raw = rec.get("raw") if isinstance(rec, dict) else None
         if not when or not raw:
             continue
-        try:
-            ts = datetime.strptime(when, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
+        ts = parse_timestamp(when)
+        if ts is None:
             continue
         try:
             payload = json.loads(raw)
@@ -122,8 +170,8 @@ def build_sessions(events, gap_seconds=DEFAULT_SESSION_GAP_SECONDS):
     for s in sessions:
         duration = (s["end"] - s["start"]).total_seconds()
         out.append({
-            "start": s["start"].strftime("%Y-%m-%d %H:%M:%S"),
-            "end": s["end"].strftime("%Y-%m-%d %H:%M:%S"),
+            "start": format_timestamp(s["start"]),
+            "end": format_timestamp(s["end"]),
             "duration_seconds": int(duration),
             "duration_human": format_duration(duration),
             "readings": s["readings"],
@@ -144,7 +192,7 @@ def format_duration(total_seconds):
 
 def current_state(events, now=None, offline_after=DEFAULT_OFFLINE_AFTER_SECONDS):
     """Best-effort live status: Running / Idle / Offline (not reporting)."""
-    now = now or datetime.now()
+    now = now or datetime.utcnow()
     if not events:
         return {"state": "Unknown", "since": None, "last_seen": None}
     last = events[-1]
@@ -152,12 +200,12 @@ def current_state(events, now=None, offline_after=DEFAULT_OFFLINE_AFTER_SECONDS)
     if age > offline_after:
         return {
             "state": "Offline",
-            "since": last["ts"].strftime("%Y-%m-%d %H:%M:%S"),
-            "last_seen": last["ts"].strftime("%Y-%m-%d %H:%M:%S"),
+            "since": format_timestamp(last["ts"]),
+            "last_seen": format_timestamp(last["ts"]),
         }
     return {
         "state": "Running" if last["motion"] else "Idle",
-        "last_seen": last["ts"].strftime("%Y-%m-%d %H:%M:%S"),
+        "last_seen": format_timestamp(last["ts"]),
         "battery_percent": last.get("battery_percent"),
         "energy_percent": last.get("energy_percent"),
     }

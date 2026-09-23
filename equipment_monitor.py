@@ -31,15 +31,24 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from urllib.parse import parse_qs, urlparse
 
 import paho.mqtt.client as mqtt
 
 from credentials import load_config
 from minew_mse import parse_mse
-from motion_analytics import DEFAULT_SESSION_GAP_SECONDS, analyze
+from motion_analytics import (
+    DEFAULT_SESSION_GAP_SECONDS,
+    analyze,
+    format_timestamp,
+    load_motion_records,
+    raw_records_in_range,
+)
 
 _cfg = load_config()
 BROKER, PORT, TOPIC = _cfg.broker, _cfg.port, _cfg.topic
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 WEB_HOST = os.environ.get("ER_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("ER_WEB_PORT", "8081"))
@@ -161,7 +170,7 @@ def log_motion(hit):
 
 
 def log_event(event, when=None, **fields):
-    record = {"event": event, "when": (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"), **fields}
+    record = {"event": event, "when": format_timestamp(when or datetime.utcnow()), **fields}
     try:
         _append_jsonl(EVENTS_LOG, record)
     except OSError as exc:
@@ -173,7 +182,7 @@ def log_anomaly(kind, message, when=None, **fields):
     record = {
         "kind": kind,
         "message": message,
-        "when": (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"),
+        "when": format_timestamp(when or datetime.utcnow()),
         **fields,
     }
     try:
@@ -238,12 +247,12 @@ def on_message(client, userdata, msg):
         parsed_payload = json.loads(payload)
     except json.JSONDecodeError:
         return
-    now = datetime.now()
+    now = datetime.utcnow()
     for dev in device_list(parsed_payload):
         mac = str(dev.get("ble_addr") or "").upper().replace(":", "")
         if mac != TARGET_MAC_KEY:
             continue
-        log_motion({"when": now.strftime("%Y-%m-%d %H:%M:%S"), "topic": msg.topic, "raw": payload})
+        log_motion({"when": format_timestamp(now), "topic": msg.topic, "raw": payload})
         parsed = parse_mse(dev.get("data") or "")
         if parsed is None:
             continue
@@ -260,7 +269,7 @@ def offline_watchdog():
             last_seen = _state["last_seen"]
             if last_seen is None or _state["offline_flagged"]:
                 continue
-            age = (datetime.now() - last_seen).total_seconds()
+            age = (datetime.utcnow() - last_seen).total_seconds()
             if age > OFFLINE_AFTER_SECONDS:
                 was_running = _state["motion"] is True
                 log_anomaly(
@@ -291,207 +300,25 @@ def service_watchdog():
                 _state["service_due_flagged"] = False
 
 
-HTML = r"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<title>Equipment Runtime Monitor</title>
-<style>
-body { margin: 0; font-family: Segoe UI, system-ui, sans-serif; background: #0a0f0c; color: #eaf2ec; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
-.kicker { color: #7fd8a0; letter-spacing: 2px; font-size: 12px; }
-h1 { margin: 4px 0 4px; font-size: 22px; font-weight: 600; }
-.sub { color: #8fae9b; font-size: 13px; margin-bottom: 18px; }
-.status-row { display: flex; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }
-.status-pill { display: inline-flex; align-items: center; gap: 10px; background: #10241a; border: 1px solid #1f4a34; border-radius: 10px; padding: 14px 22px; }
-.status-dot { width: 14px; height: 14px; border-radius: 50%; }
-.status-dot.running { background: #2ecc71; box-shadow: 0 0 12px #2ecc71aa; }
-.status-dot.idle { background: #f1c40f; }
-.status-dot.offline { background: #e74c3c; }
-.status-dot.unknown { background: #607080; }
-.status-text { font-size: 20px; font-weight: 700; }
-.status-meta { color: #8fae9b; font-size: 12px; }
-.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
-.card { background: #10241a; border: 1px solid #1f4a34; border-radius: 8px; padding: 16px; text-align: center; }
-.card .n { font-size: 30px; font-weight: 700; margin: 6px 0; }
-.card .l { color: #8fae9b; font-size: 12px; }
-.ok { color: #2ecc71; } .warn { color: #f1c40f; } .bad { color: #e74c3c; } .info { color: #7fd8a0; }
-.panel { background: #10241a; border: 1px solid #1f4a34; border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; }
-.panel h2 { margin: 0 0 10px; font-size: 14px; color: #7fd8a0; letter-spacing: 1px; }
-.panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-.meta { color: #8fae9b; font-size: 13px; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { border-bottom: 1px solid #1f4a34; padding: 8px; text-align: left; }
-th { color: #7fd8a0; }
-.table-box { max-height: 320px; overflow: auto; }
-.timeline { position: relative; height: 34px; background: #0d1c14; border-radius: 6px; overflow: hidden; border: 1px solid #1f4a34; }
-.timeline .seg { position: absolute; top: 0; bottom: 0; background: #2ecc71; }
-.timeline .now-marker { position: absolute; top: -4px; bottom: -4px; width: 2px; background: #e74c3c; }
-.timeline-labels { display: flex; justify-content: space-between; color: #6c8977; font-size: 11px; margin-top: 4px; }
-.banner { border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px; }
-.banner.due { background: #3a1414; border: 1px solid #7a2b2b; color: #ffb4b4; }
-.diff-note { color: #6c8977; font-size: 11px; margin-top: 4px; }
-.kind-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.kind-tamper, .kind-unexpected_offline { background: #3a1414; color: #ffb4b4; }
-.kind-low_sensor_battery, .kind-short_session, .kind-service_due { background: #3a3414; color: #f1e3a0; }
-.kind-sensor_offline { background: #26313d; color: #a9c4da; }
-code { font-family: Consolas, monospace; }
-</style></head>
-<body><div class="wrap">
-<div class="kicker">EQUIPMENT RUNTIME MONITOR</div>
-<h1>Is It Running? &mdash; <span id="mac-label"></span></h1>
-<p class="sub">Minew MSE01/MSE02 motion sensing, decoded from raw MQTT into run/stop sessions, anomalies, and a durable audit trail.</p>
-
-<div id="service-banner"></div>
-
-<div class="status-row">
-  <div class="status-pill">
-    <div class="status-dot unknown" id="status-dot"></div>
-    <div>
-      <div class="status-text" id="status-text">Loading&hellip;</div>
-      <div class="status-meta" id="status-meta">&nbsp;</div>
-    </div>
-  </div>
-</div>
-
-<div class="cards">
-  <div class="card"><div class="n info" id="total-run">&mdash;</div><div class="l">Runtime Today</div></div>
-  <div class="card"><div class="n ok" id="availability">&mdash;</div><div class="l">Availability (OEE)</div></div>
-  <div class="card"><div class="n warn" id="cycles">&mdash;</div><div class="l">Start/Stop Cycles</div></div>
-  <div class="card"><div class="n" id="avg-session">&mdash;</div><div class="l">Avg Run Length</div></div>
-</div>
-
-<div class="panel">
-  <div class="panel-head"><h2>24-HOUR TIMELINE</h2><div class="meta" id="timeline-meta">&nbsp;</div></div>
-  <div class="timeline" id="timeline"></div>
-  <div class="timeline-labels"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
-  <div class="diff-note">Green = machine running (motion detected). Red marker = current time.</div>
-</div>
-
-<div class="panel">
-  <div class="panel-head"><h2>PREVENTIVE MAINTENANCE</h2></div>
-  <div class="cards">
-    <div class="card"><div class="n info" id="pm-hours-since">&mdash;</div><div class="l">Hours Run Since Service</div></div>
-    <div class="card"><div class="n" id="pm-hours-until">&mdash;</div><div class="l">Hours Until Due</div></div>
-    <div class="card"><div class="n" id="pm-cost">&mdash;</div><div class="l">Est. Downtime Cost Today</div></div>
-    <div class="card"><div class="n" id="pm-battery">&mdash;</div><div class="l">Sensor Battery</div></div>
-  </div>
-  <p class="meta">Configurable via <code>ER_SERVICE_INTERVAL_HOURS</code>, <code>ER_HOURLY_DOWNTIME_COST</code>, <code>ER_SESSION_GAP_SECONDS</code> -- set them to match this machine's real schedule and cost-of-downtime.</p>
-</div>
-
-<div class="panel">
-  <div class="panel-head"><h2>ANOMALIES</h2><div class="meta" id="anomaly-count">0</div></div>
-  <p class="meta" id="anomaly-empty">No anomalies logged.</p>
-  <div class="table-box"><table>
-    <thead><tr><th>when</th><th>kind</th><th>message</th></tr></thead>
-    <tbody id="anomaly-rows"></tbody>
-  </table></div>
-</div>
-
-<div class="panel">
-  <div class="panel-head"><h2>RUN SESSIONS TODAY</h2><div class="meta" id="session-count">0 sessions</div></div>
-  <p class="meta" id="sessions-empty">No run sessions detected yet.</p>
-  <div class="table-box"><table>
-    <thead><tr><th>start</th><th>end</th><th>duration</th><th>readings</th></tr></thead>
-    <tbody id="session-rows"></tbody>
-  </table></div>
-</div>
-
-<script>
-function esc(s){return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}
-function dayBoundsFromTimestamp(ts){
-  const d = new Date(ts.replace(' ', 'T'));
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+_STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
 }
-async function refresh(){
-  let d;
-  try { d = await (await fetch('/api/motion')).json(); }
-  catch(e) { document.getElementById('status-text').textContent = 'Cannot reach server'; return; }
 
-  document.getElementById('mac-label').textContent = d.mac;
 
-  const st = d.state || {};
-  const dot = document.getElementById('status-dot');
-  dot.className = 'status-dot ' + (st.state || 'unknown').toLowerCase();
-  document.getElementById('status-text').textContent = st.state || 'Unknown';
-  let metaBits = [];
-  if (st.last_seen) metaBits.push('last seen ' + st.last_seen);
-  if (st.battery_percent != null) metaBits.push('sensor battery ' + st.battery_percent + '%');
-  if (st.energy_percent != null) metaBits.push('energy ' + st.energy_percent + '%');
-  document.getElementById('status-meta').textContent = metaBits.join(' · ') || (d.event_count === 0 ? 'No messages captured yet' : '');
+def _read_static(filename):
+    with open(os.path.join(STATIC_DIR, filename), "rb") as f:
+        return f.read()
 
-  const sum = d.summary || {};
-  document.getElementById('total-run').textContent = sum.total_run_human || '0s';
-  document.getElementById('availability').textContent = (sum.utilization_percent != null ? sum.utilization_percent + '%' : '—');
-  document.getElementById('cycles').textContent = sum.cycle_count != null ? sum.cycle_count : '—';
-  document.getElementById('avg-session').textContent = sum.avg_session_human || '—';
 
-  document.getElementById('pm-hours-since').textContent = sum.hours_since_service != null ? sum.hours_since_service + 'h' : '—';
-  document.getElementById('pm-hours-until').textContent = sum.hours_until_service != null ? sum.hours_until_service + 'h' : '—';
-  document.getElementById('pm-cost').textContent = sum.estimated_downtime_cost != null ? ('$' + sum.estimated_downtime_cost.toLocaleString()) : 'not configured';
-  const battEl = document.getElementById('pm-battery');
-  if (st.battery_percent != null) {
-    battEl.textContent = st.battery_percent + '%';
-    battEl.className = 'n ' + (st.battery_percent < d.low_battery_threshold ? 'bad' : 'ok');
-  } else {
-    battEl.textContent = '—';
-    battEl.className = 'n';
-  }
-
-  const banner = document.getElementById('service-banner');
-  banner.innerHTML = sum.service_due
-    ? '<div class="banner due"><strong>Service due:</strong> this machine has run ' + sum.hours_since_service + 'h since its last service, past the ' + sum.service_interval_hours + 'h interval.</div>'
-    : '';
-
-  const anomalies = d.anomalies || [];
-  document.getElementById('anomaly-count').textContent = anomalies.length;
-  document.getElementById('anomaly-empty').hidden = anomalies.length > 0;
-  document.getElementById('anomaly-rows').innerHTML = anomalies.map(a =>
-    '<tr><td>'+esc(a.when)+'</td><td><span class="kind-tag kind-'+esc(a.kind)+'">'+esc(a.kind)+'</span></td><td>'+esc(a.message)+'</td></tr>'
-  ).join('');
-
-  const sessions = d.sessions || [];
-  document.getElementById('session-count').textContent = sessions.length + ' session' + (sessions.length === 1 ? '' : 's');
-  document.getElementById('sessions-empty').hidden = sessions.length > 0;
-  document.getElementById('session-rows').innerHTML = sessions.map(s =>
-    '<tr><td>'+esc(s.start)+'</td><td>'+esc(s.end)+'</td><td>'+esc(s.duration_human)+'</td><td>'+s.readings+'</td></tr>'
-  ).join('');
-
-  const timeline = document.getElementById('timeline');
-  timeline.innerHTML = '';
-  const allSessions = sessions.slice().reverse();
-  if (allSessions.length > 0) {
-    const dayStart = dayBoundsFromTimestamp(allSessions[0].start);
-    const dayMs = 24 * 3600 * 1000;
-    allSessions.forEach(s => {
-      const startMs = new Date(s.start.replace(' ', 'T')) - dayStart;
-      const endMs = new Date(s.end.replace(' ', 'T')) - dayStart;
-      const left = Math.max(0, Math.min(100, 100 * startMs / dayMs));
-      const width = Math.max(0.3, Math.min(100 - left, 100 * (endMs - startMs) / dayMs));
-      const seg = document.createElement('div');
-      seg.className = 'seg';
-      seg.style.left = left + '%';
-      seg.style.width = width + '%';
-      seg.title = s.start + ' → ' + s.end + ' (' + s.duration_human + ')';
-      timeline.appendChild(seg);
-    });
-    if (st.last_seen) {
-      const nowMs = new Date(st.last_seen.replace(' ', 'T')) - dayStart;
-      if (nowMs >= 0 && nowMs <= dayMs) {
-        const marker = document.createElement('div');
-        marker.className = 'now-marker';
-        marker.style.left = (100 * nowMs / dayMs) + '%';
-        timeline.appendChild(marker);
-      }
-    }
-    document.getElementById('timeline-meta').textContent = dayStart.toISOString().slice(0,10);
-  } else {
-    document.getElementById('timeline-meta').textContent = 'no data yet';
-  }
-}
-refresh();
-setInterval(refresh, 3000);
-</script>
-</body></html>
-"""
+def raw_for_session(start, end):
+    """The raw MQTT hits that make up one run session, for the dashboard's
+    click-to-inspect drill-down. `start`/`end` are the session's own
+    timestamp strings, so this always matches exactly what built it."""
+    records = load_motion_records(MOTION_LOG)
+    return raw_records_in_range(records, start, end)
 
 
 class Server(ThreadingMixIn, HTTPServer):
@@ -503,8 +330,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _send(self, body, ctype, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path == "/api/motion":
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/motion":
             result = analyze(
                 path=MOTION_LOG,
                 target_mac=TARGET_MAC,
@@ -514,16 +351,27 @@ class Handler(BaseHTTPRequestHandler):
             )
             result["low_battery_threshold"] = LOW_SENSOR_BATTERY
             result["anomalies"] = list(reversed(read_jsonl_tail(ANOMALY_LOG, limit=50)))
-            body = json.dumps(result).encode()
-            ctype = "application/json"
-        else:
-            body = HTML.encode()
-            ctype = "text/html; charset=utf-8"
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            self._send(json.dumps(result).encode(), "application/json")
+            return
+
+        if path == "/api/session_raw":
+            qs = parse_qs(parsed.query)
+            start = (qs.get("start") or [None])[0]
+            end = (qs.get("end") or [None])[0]
+            hits = raw_for_session(start, end) if start and end else []
+            self._send(json.dumps({"start": start, "end": end, "hits": hits}).encode(), "application/json")
+            return
+
+        static = _STATIC_FILES.get(path)
+        if static:
+            filename, ctype = static
+            try:
+                self._send(_read_static(filename), ctype)
+            except OSError:
+                self._send(b"Static file missing", "text/plain", status=500)
+            return
+
+        self._send(b"Not found", "text/plain", status=404)
 
 
 def run():

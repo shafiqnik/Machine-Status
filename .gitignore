@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.txt
+!requirements.txt
+Machine-Status.tar.gz
+Machine-Status_centos8.zip
+Motion.json
+runtime_events.log
+anomaly_events.log
+machine_status.log
+*.tmp
