@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Equipment Runtime Monitor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="kicker">EQUIPMENT RUNTIME MONITOR</div>
+  <h1>Is It Running? &mdash; <span id="mac-label"></span></h1>
+  <p class="sub">Minew MSE01/MSE02 motion sensing, decoded from raw MQTT into run/stop sessions, anomalies, and a durable audit trail. All times below are shown in your device's local time.</p>
+
+  <div id="service-banner"></div>
+
+  <div class="status-row">
+    <div class="status-pill">
+      <div class="status-dot unknown" id="status-dot"></div>
+      <div>
+        <div class="status-text" id="status-text">Loading&hellip;</div>
+        <div class="status-meta" id="status-meta">&nbsp;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="n info" id="total-run">&mdash;</div><div class="l">Runtime Today</div></div>
+    <div class="card"><div class="n ok" id="availability">&mdash;</div><div class="l">Availability (OEE)</div></div>
+    <div class="card"><div class="n warn" id="cycles">&mdash;</div><div class="l">Start/Stop Cycles</div></div>
+    <div class="card"><div class="n" id="avg-session">&mdash;</div><div class="l">Avg Run Length</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>24-HOUR TIMELINE</h2><div class="meta" id="timeline-meta">&nbsp;</div></div>
+    <div class="timeline-chart" id="timeline-chart"></div>
+    <div class="diff-note">High &amp; green = running (ON). Low &amp; red = idle (OFF). Dashed line = last reading.</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>PREVENTIVE MAINTENANCE</h2></div>
+    <div class="cards">
+      <div class="card"><div class="n info" id="pm-hours-since">&mdash;</div><div class="l">Hours Run Since Service</div></div>
+      <div class="card"><div class="n" id="pm-hours-until">&mdash;</div><div class="l">Hours Until Due</div></div>
+      <div class="card"><div class="n" id="pm-cost">&mdash;</div><div class="l">Est. Downtime Cost Today</div></div>
+      <div class="card"><div class="n" id="pm-battery">&mdash;</div><div class="l">Sensor Battery</div></div>
+    </div>
+    <p class="meta">Configurable via <code>ER_SERVICE_INTERVAL_HOURS</code>, <code>ER_HOURLY_DOWNTIME_COST</code>, <code>ER_SESSION_GAP_SECONDS</code> -- set them to match this machine's real schedule and cost-of-downtime.</p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>ANOMALIES</h2><div class="meta" id="anomaly-count">0</div></div>
+    <p class="meta" id="anomaly-empty">No anomalies logged.</p>
+    <div class="table-box"><table>
+      <thead><tr><th>when</th><th>kind</th><th>message</th></tr></thead>
+      <tbody id="anomaly-rows"></tbody>
+    </table></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>RUN SESSIONS TODAY</h2><div class="meta" id="session-count">0 sessions</div></div>
+    <p class="meta" id="sessions-empty">No run sessions detected yet.</p>
+    <p class="meta">Click a row to see the raw MQTT messages behind it.</p>
+    <div class="table-box"><table>
+      <thead><tr><th>start</th><th>end</th><th>duration</th><th>readings</th></tr></thead>
+      <tbody id="session-rows"></tbody>
+    </table></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="raw-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="raw-modal-title">
+    <div class="modal-head">
+      <h3 id="raw-modal-title">Raw MQTT messages</h3>
+      <button type="button" class="modal-close" id="raw-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-sub" id="raw-modal-sub"></div>
+    <div class="modal-body" id="raw-modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
